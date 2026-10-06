@@ -16,7 +16,16 @@ Navegador ──► CattusManga (Next.js, :4590) ──► Suwayomi-Server (Java
   el progreso de lectura y las copias de seguridad `.tachibk`.
 - **FlareSolverr** resuelve automáticamente los desafíos de Cloudflare: no hace falta ninguna extensión
   de navegador.
-- **CattusManga** es la interfaz: biblioteca, exploración, búsqueda global, extensiones y lector.
+- **CattusManga** es la interfaz: biblioteca, novedades, exploración, búsqueda global, historial,
+  descargas, extensiones, perfil con estadísticas y lector.
+
+## Seguridad
+
+- La web pide la contraseña de `CATTUS_PASSWORD` antes de servir cualquier página o llamada.
+- El proxy `/api/sw` **no** reenvía toda la API de Suwayomi: solo GET a portadas, páginas, iconos y
+  copias de seguridad, y POST a GraphQL desde la propia web (`src/lib/proxy-policy.ts`). Así otra web
+  no puede usar tu sesión para instalar extensiones o cambiar tu biblioteca (CSRF).
+- Los enlaces externos que dan las extensiones solo se abren si son `http(s)`.
 
 ## Arrancar (solo necesitas Docker Desktop)
 
@@ -46,6 +55,16 @@ npm run dev                                  # http://localhost:3000
 
 La web encuentra Suwayomi en `http://127.0.0.1:4567` por defecto; cámbialo con la variable
 `SUWAYOMI_URL`.
+
+| Comando | Qué hace |
+| --- | --- |
+| `npm test` | Tests unitarios (Vitest) |
+| `npm run test:watch` | Tests en modo vigilancia |
+| `npm run typecheck` | Comprobación de tipos |
+| `npm run build` | Compilación de producción |
+
+La lógica sin interfaz (política del proxy, autenticación, historial, novedades, estadísticas,
+formato de fechas, avisos) vive en `src/lib` y tiene sus tests al lado (`*.test.ts`).
 
 ## Repositorios de extensiones
 
