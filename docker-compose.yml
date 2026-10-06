@@ -1,0 +1,47 @@
+# Todo CattusManga con un solo comando:  docker compose up -d   ->  http://localhost:4590
+# La contraseña y el puerto se configuran en el archivo .env (junto a este).
+#  - suwayomi:     ejecuta las extensiones reales de Mihon/Keiyoushi (Java, incluido en la imagen)
+#  - flaresolverr: resuelve automáticamente los desafíos de Cloudflare
+#  - web:          la interfaz de CattusManga
+services:
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:stable
+    container_name: cattus-suwayomi
+    restart: unless-stopped
+    environment:
+      - EXTENSION_STORES=["https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb"]
+      - FLARESOLVERR_ENABLED=true
+      - FLARESOLVERR_URL=http://flaresolverr:8191
+      - FLARESOLVERR_RESPONSE_AS_FALLBACK=true
+      - WEB_UI_ENABLED=false
+      - AUTO_DOWNLOAD_CHAPTERS=false
+    volumes:
+      - suwayomi-data:/home/suwayomi/.local/share/Tachidesk
+    ports:
+      # Solo accesible desde tu PC, para desarrollo con `npm run dev`. La web usa la red interna de Docker.
+      - "127.0.0.1:4567:4567"
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: cattus-flaresolverr
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+
+  web:
+    build: .
+    container_name: cattus-web
+    restart: unless-stopped
+    environment:
+      - SUWAYOMI_URL=http://suwayomi:4567
+      - CATTUS_PASSWORD=${CATTUS_PASSWORD:?Falta CATTUS_PASSWORD en el archivo .env}
+    ports:
+      # Solo en este PC (127.0.0.1): nadie de la red puede entrar directamente. El móvil usa el puente del Command Center.
+      - "127.0.0.1:${CATTUS_PORT:-4590}:3000"
+    depends_on:
+      - suwayomi
+
+volumes:
+  suwayomi-data:
