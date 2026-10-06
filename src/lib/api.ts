@@ -1,4 +1,8 @@
 // Cliente de la API GraphQL de Suwayomi (a través del proxy /api/sw).
+import { toMs } from "./format";
+import { groupHistory, hideMarker, HIDDEN_HISTORY_META_KEY, type HistoryGroup } from "./history";
+import { isNewChapter } from "./updates";
+
 export const SW = "/api/sw";
 
 /** Convierte una ruta de Suwayomi ("/api/v1/manga/1/thumbnail") en una URL servible por esta web. */
@@ -172,11 +176,49 @@ export interface HistoryEntry {
   meta: { key: string; value: string }[];
 }
 
-/** Clave de metadata de capítulo (guardada en Suwayomi) usada para ocultar una entrada del historial. */
-const HIDDEN_HISTORY_META_KEY = "cattus_hiddenFromHistory";
+/** Capítulo de la sección Novedades. */
+export interface UpdateEntry {
+  id: number;
+  name: string;
+  fetchedAt: string;
+  uploadDate: string;
+  isRead: boolean;
+  isDownloaded: boolean;
+  lastPageRead: number;
+  pageCount: number;
+  manga: MangaCardData;
+}
+
+export interface LibraryUpdateStatus {
+  isRunning: boolean;
+  finishedJobs: number;
+  totalJobs: number;
+  /** Mangas cuya actualización falló en la última búsqueda. */
+  failed: { id: number; title: string }[];
+  /** Última búsqueda de actualizaciones, en ms (0 si nunca). */
+  lastUpdate: number;
+}
+
+export interface StatsManga extends MangaCardData {
+  genre: string[];
+  status: MangaStatus;
+  unreadCount: number;
+  downloadCount: number;
+  source: { displayName: string } | null;
+  chapters: { totalCount: number };
+}
+
+export interface StatsData {
+  library: StatsManga[];
+  readChapters: number;
+  openedChapters: number;
+  downloadedChapters: number;
+  /** lastReadAt de los capítulos leídos en el último año. */
+  recentReads: string[];
+}
 
 /** Limpia los mensajes de error de Suwayomi (que incluyen el stack trace de Java). */
-function cleanError(message: string): string {
+export function cleanError(message: string): string {
   let msg = message
     .replace(/^Exception while fetching data \([^)]*\)\s*:\s*/i, "")
     .split(/\r?\n/)[0]
@@ -237,6 +279,28 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 
 const searchSlot = limiter(6);
 const GLOBAL_SEARCH_TIMEOUT = 25_000;
+
+const HISTORY_PAGE = 100;
+/** Tope de páginas al reunir el historial, para no recorrer miles de capítulos si casi todo está oculto. */
+const HISTORY_MAX_PAGES = 10;
+const UPDATES_PAGE = 100;
+
+/** fetchedAt más antiguo de cada manga (su primera carga). No cambia, así que se guarda en memoria. */
+const firstFetchedAt = new Map<number, string>();
+
+async function loadFirstFetches(mangaIds: number[]) {
+  const missing = mangaIds.filter((id) => !firstFetchedAt.has(id));
+  if (!missing.length) return;
+  // Una sola petición con un alias por manga.
+  const fields = missing
+    .map((id) => `m${id}: chapters(condition: { mangaId: ${Number(id)} }, order: [{ by: FETCHED_AT, byType: ASC }], first: 1) { nodes { fetchedAt } }`)
+    .join("\n");
+  const d = await gql<Record<string, { nodes: { fetchedAt: string }[] }>>(`{ ${fields} }`);
+  for (const id of missing) {
+    const first = d[`m${id}`]?.nodes[0]?.fetchedAt;
+    if (first) firstFetchedAt.set(id, first);
+  }
+}
 
 // ---------------------------------------------------------------- Fragmentos
 const SOURCE = `id name displayName lang iconUrl supportsLatest contentWarning homeUrl`;
@@ -373,25 +437,128 @@ export const api = {
     gql(`mutation($id: Int!, $p: UpdateMangaCategoriesPatchInput!) { updateMangaCategories(input: { id: $id, patch: $p }) {
       manga { id } } }`, { id: mangaId, p: patch }),
 
-  history: (limit = 60) =>
-    gql<{ chapters: { nodes: HistoryEntry[] } }>(
-      `query($n: Int!) { chapters(filter: { lastReadAt: { greaterThan: "0" } },
-        order: [{ by: LAST_READ_AT, byType: DESC }], first: $n) {
-        nodes { id name lastPageRead pageCount lastReadAt isRead manga { ${MANGA_CARD} } meta { key value } } } }`,
-      { n: limit },
-    ).then((d) => d.chapters.nodes),
+  // -------------------------------------------------------------- Historial
+  /**
+   * Historial agrupado por manga (una fila por manga, con su último capítulo leído). Se pide por
+   * páginas hasta reunir `maxMangas` mangas visibles: así las entradas ocultas o los muchos capítulos
+   * de un mismo manga no dejan la lista corta o vacía.
+   */
+  history: async (maxMangas: number): Promise<HistoryGroup[]> => {
+    const entries: HistoryEntry[] = [];
+    for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
+      const d = await gql<{ chapters: { nodes: HistoryEntry[]; pageInfo: { hasNextPage: boolean } } }>(
+        `query($n: Int!, $o: Int!) { chapters(filter: { lastReadAt: { greaterThan: "0" } },
+          order: [{ by: LAST_READ_AT, byType: DESC }], first: $n, offset: $o) {
+          pageInfo { hasNextPage }
+          nodes { id name lastPageRead pageCount lastReadAt isRead manga { ${MANGA_CARD} } meta { key value } } } }`,
+        { n: HISTORY_PAGE, o: page * HISTORY_PAGE },
+      );
+      entries.push(...d.chapters.nodes);
+      if (!d.chapters.pageInfo.hasNextPage || groupHistory(entries, maxMangas).length >= maxMangas) break;
+    }
+    return groupHistory(entries, maxMangas);
+  },
 
   /**
-   * Oculta/muestra una entrada del historial. Suwayomi no permite borrar el historial (deriva de
-   * lastReadAt, que no es editable), así que se marca con metadata del capítulo: se guarda en el
-   * propio servidor y por eso es consistente entre navegadores/dispositivos.
+   * Quita un manga del historial (todos sus capítulos leídos). Devuelve los ids afectados, para
+   * poder deshacerlo. Ver `isHiddenFromHistory` para el porqué de la metadata.
    */
-  hideFromHistory: (chapterId: number) =>
-    gql(`mutation($id: Int!, $k: String!, $v: String!) { setChapterMeta(input: { meta: { chapterId: $id, key: $k, value: $v } }) {
-      clientMutationId } }`, { id: chapterId, k: HIDDEN_HISTORY_META_KEY, v: "true" }),
+  hideMangaFromHistory: async (mangaId: number): Promise<number[]> => {
+    const d = await gql<{ chapters: { nodes: { id: number; lastReadAt: string }[] } }>(
+      `query($id: Int!) { chapters(condition: { mangaId: $id }, filter: { lastReadAt: { greaterThan: "0" } }) {
+        nodes { id lastReadAt } } }`,
+      { id: mangaId },
+    );
+    const chapters = d.chapters.nodes;
+    if (!chapters.length) return [];
+    const ids = chapters.map((c) => c.id);
+    await gql(
+      `mutation($items: [SetChapterMetasItemInput!]!) { setChapterMetas(input: { items: $items }) { clientMutationId } }`,
+      { items: [{ chapterIds: ids, metas: [{ key: HIDDEN_HISTORY_META_KEY, value: hideMarker(chapters) }] }] },
+    );
+    return ids;
+  },
 
-  isHiddenFromHistory: (entry: Pick<HistoryEntry, "meta">) =>
-    entry.meta.some((m) => m.key === HIDDEN_HISTORY_META_KEY && m.value === "true"),
+  /** Deshace `hideMangaFromHistory`. */
+  unhideFromHistory: (chapterIds: number[]) =>
+    gql(
+      `mutation($items: [DeleteChapterMetasItemInput!]!) { deleteChapterMetas(input: { items: $items }) { clientMutationId } }`,
+      { items: [{ chapterIds, keys: [HIDDEN_HISTORY_META_KEY] }] },
+    ),
+
+  // -------------------------------------------------------------- Novedades
+  /**
+   * Una página de capítulos nuevos de la biblioteca, del más reciente al más antiguo. Se descartan
+   * los que llegaron en la primera carga de su manga (ver `isNewChapter`), así que una página puede
+   * traer menos de `UPDATES_PAGE` elementos o ninguno aunque haya más.
+   */
+  updates: async (offset: number): Promise<{ items: UpdateEntry[]; nextOffset?: number }> => {
+    const d = await gql<{ chapters: { nodes: UpdateEntry[]; pageInfo: { hasNextPage: boolean } } }>(
+      `query($n: Int!, $o: Int!) { chapters(filter: { inLibrary: { equalTo: true } },
+        order: [{ by: FETCHED_AT, byType: DESC }, { by: SOURCE_ORDER, byType: DESC }], first: $n, offset: $o) {
+        pageInfo { hasNextPage }
+        nodes { id name fetchedAt uploadDate isRead isDownloaded lastPageRead pageCount manga { ${MANGA_CARD} } } } }`,
+      { n: UPDATES_PAGE, o: offset },
+    );
+    const nodes = d.chapters.nodes;
+    await loadFirstFetches([...new Set(nodes.map((c) => c.manga.id))]);
+    return {
+      items: nodes.filter((c) => isNewChapter(c.fetchedAt, firstFetchedAt.get(c.manga.id))),
+      nextOffset: d.chapters.pageInfo.hasNextPage ? offset + UPDATES_PAGE : undefined,
+    };
+  },
+
+  /** Pide a todas las fuentes los capítulos nuevos de la biblioteca (lo hace Suwayomi en segundo plano). */
+  updateLibrary: () =>
+    gql<{ updateLibrary: { updateStatus: { jobsInfo: { isRunning: boolean; finishedJobs: number; totalJobs: number } } } }>(
+      `mutation { updateLibrary(input: {}) { updateStatus { jobsInfo { isRunning finishedJobs totalJobs } } } }`,
+    ).then((d) => d.updateLibrary.updateStatus.jobsInfo),
+
+  libraryUpdateStatus: () =>
+    gql<{
+      libraryUpdateStatus: {
+        jobsInfo: { isRunning: boolean; finishedJobs: number; totalJobs: number };
+        mangaUpdates: { status: string; manga: { id: number; title: string } }[];
+      };
+      lastUpdateTimestamp: { timestamp: string } | null;
+    }>(
+      `{ libraryUpdateStatus { jobsInfo { isRunning finishedJobs totalJobs } mangaUpdates { status manga { id title } } }
+        lastUpdateTimestamp { timestamp } }`,
+    ).then(
+      (d): LibraryUpdateStatus => ({
+        ...d.libraryUpdateStatus.jobsInfo,
+        failed: d.libraryUpdateStatus.mangaUpdates.filter((u) => u.status === "FAILED").map((u) => u.manga),
+        lastUpdate: toMs(d.lastUpdateTimestamp?.timestamp),
+      }),
+    ),
+
+  // -------------------------------------------------------------- Estadísticas (Perfil)
+  stats: () =>
+    gql<{
+      library: { nodes: StatsManga[] };
+      read: { totalCount: number };
+      opened: { totalCount: number };
+      downloaded: { totalCount: number };
+      recent: { nodes: { lastReadAt: string }[] };
+    }>(
+      `query($since: LongString!) {
+        library: mangas(condition: { inLibrary: true }) { nodes {
+          ${MANGA_CARD} genre status unreadCount downloadCount source { displayName } chapters { totalCount } } }
+        read: chapters(condition: { isRead: true }) { totalCount }
+        opened: chapters(filter: { lastReadAt: { greaterThan: "0" } }) { totalCount }
+        downloaded: chapters(condition: { isDownloaded: true }) { totalCount }
+        recent: chapters(filter: { lastReadAt: { greaterThan: $since } }) { nodes { lastReadAt } } }`,
+      // lastReadAt se guarda en segundos.
+      { since: String(Math.floor((Date.now() - 366 * 86_400_000) / 1000)) },
+    ).then(
+      (d): StatsData => ({
+        library: d.library.nodes,
+        readChapters: d.read.totalCount,
+        openedChapters: d.opened.totalCount,
+        downloadedChapters: d.downloaded.totalCount,
+        recentReads: d.recent.nodes.map((c) => c.lastReadAt),
+      }),
+    ),
 
   // -------------------------------------------------------------- Capítulos / lector
   chapter: (id: number) =>
@@ -464,8 +631,11 @@ export const api = {
     );
     form.append("map", JSON.stringify({ "0": ["variables.b"] }));
     form.append("0", file);
-    const res = await fetch(`${SW}/api/graphql`, { method: "POST", body: form });
-    const json = await res.json();
+    const res = await fetch(`${SW}/api/graphql`, { method: "POST", body: form }).catch(() => {
+      throw new Error("Sin conexión con el servidor.");
+    });
+    const json = await res.json().catch(() => null);
+    if (!json) throw new Error(`El servidor respondió ${res.status}.`);
     if (json.errors?.length) throw new Error(cleanError(json.errors[0].message));
     return json.data.restoreBackup.id as string;
   },
