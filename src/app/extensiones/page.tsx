@@ -196,7 +196,7 @@ function Section({ title, count, children }: { title: string; count: number; chi
         {title}
         <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-semibold normal-case">{count}</span>
       </h2>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{children}</div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">{children}</div>
     </section>
   );
 }

@@ -132,7 +132,8 @@ function Stats({ data }: { data: StatsData }) {
         </p>
       </Card>
 
-      <div className="grid gap-8 lg:grid-cols-2">
+      {/* grid-cols-1 = minmax(0, 1fr): sin ello, un título largo ensancha la columna en vez de recortarse. */}
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         <Card title="Lo que más has leído">
           {s.topMangas.length === 0 ? (
             <Empty />
@@ -208,7 +209,7 @@ function StatTile({
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
+    <section className="min-w-0 rounded-2xl border border-border bg-surface p-4 sm:p-5">
       <h2 className="font-bold">{title}</h2>
       {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
       <div className="mt-4">{children}</div>
