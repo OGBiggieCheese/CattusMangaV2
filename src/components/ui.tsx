@@ -25,7 +25,7 @@ export function PageHeader({
 }
 
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "danger" | "dangerSolid";
   size?: "sm" | "md";
   loading?: boolean;
 };
@@ -36,6 +36,7 @@ export function Button({ variant = "secondary", size = "md", loading, className 
     secondary: "bg-surface-2 text-fg hover:bg-border",
     ghost: "text-muted hover:bg-surface-2 hover:text-fg",
     danger: "bg-danger/15 text-danger hover:bg-danger/25",
+    dangerSolid: "bg-danger text-white hover:brightness-110",
   };
   const sizes = { sm: "h-8 px-3 text-xs gap-1.5", md: "h-10 px-4 text-sm gap-2" };
   return (

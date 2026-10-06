@@ -11,12 +11,13 @@ import {
   Loader2,
   RotateCw,
   Settings2,
-  X,
 } from "lucide-react";
 import { api, type Chapter } from "@/lib/api";
 import { useSettings, type ReaderFit } from "@/lib/settings";
 import { previousPath } from "@/lib/nav";
 import { Button, ErrorBox, Toggle } from "@/components/ui";
+import { isModalOpen, Modal } from "@/components/Modal";
+import { toast } from "@/lib/toast";
 
 /** Imágenes del siguiente capítulo que se descargan por adelantado. */
 const PRELOAD_IMAGES = 5;
@@ -73,7 +74,9 @@ function Reader({ id }: { id: number }) {
     const done = page >= total - 1;
     const save = () => {
       pendingSave.current = null;
-      return api.updateChapter(id, done ? { lastPageRead: page, isRead: true } : { lastPageRead: page }).catch(() => {});
+      return api
+        .updateChapter(id, done ? { lastPageRead: page, isRead: true } : { lastPageRead: page })
+        .catch((e) => toast.error(`No se pudo guardar el progreso: ${(e as Error).message}`, { key: "reader-progress" }));
     };
     pendingSave.current = save;
     const t = setTimeout(save, 600);
@@ -150,6 +153,8 @@ function Reader({ id }: { id: number }) {
   // Teclado
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Con una ventana abierta, Esc la cierra a ella (y las flechas no pasan página por detrás).
+      if (isModalOpen() || e.ctrlKey || e.metaKey || e.altKey) return;
       if ((e.target as HTMLElement)?.tagName === "SELECT" || (e.target as HTMLElement)?.tagName === "INPUT") return;
       const rtl = readerDirection === "rtl";
       if (e.key === "Escape") goBack();
@@ -176,13 +181,14 @@ function Reader({ id }: { id: number }) {
         }`}
       >
         <div className="mx-auto flex h-14 max-w-6xl items-center gap-2 px-3">
-          <Link href={backHref} onClick={onBackClick} className="grid size-10 shrink-0 place-items-center rounded-xl text-muted hover:bg-surface-2 hover:text-fg" title="Volver (Esc)">
+          <Link href={backHref} onClick={onBackClick} className="grid size-10 shrink-0 place-items-center rounded-xl text-muted hover:bg-surface-2 hover:text-fg" title="Volver (Esc)" aria-label="Volver a la ficha">
             <ArrowLeft className="size-5" />
           </Link>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-bold">{c?.manga.title ?? "…"}</p>
             {ordered.length > 0 ? (
               <select
+                aria-label="Capítulo"
                 value={id}
                 onChange={(e) => goChapter(Number(e.target.value))}
                 className="-ml-1 max-w-full truncate rounded bg-transparent text-xs text-muted outline-none hover:text-fg"
@@ -198,15 +204,19 @@ function Reader({ id }: { id: number }) {
             )}
           </div>
           <button
-            onClick={() => setPanel((v) => !v)}
+            onClick={() => setPanel(true)}
             className={`grid size-10 place-items-center rounded-xl hover:bg-surface-2 ${panel ? "text-accent" : "text-muted"}`}
             title="Ajustes del lector"
+            aria-label="Ajustes del lector"
+            aria-haspopup="dialog"
           >
             <Settings2 className="size-5" />
           </button>
         </div>
-        {panel && <ReaderPanel onClose={() => setPanel(false)} />}
+
       </header>
+
+      <ReaderPanel open={panel} onClose={() => setPanel(false)} />
 
       {/* Contenido */}
       {pages.isPending || chapter.isPending ? (
@@ -525,53 +535,63 @@ function ChapterEnd({
 }
 
 // ---------------------------------------------------------------- Ajustes rápidos
-function ReaderPanel({ onClose }: { onClose: () => void }) {
-  const s = useSettings();
-  const Seg = <T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) => (
-    <div className="flex rounded-xl bg-surface-2 p-1 text-xs font-semibold">
-      {options.map(([v, label]) => (
-        <button
-          key={v}
-          onClick={() => onChange(v)}
-          className={`flex-1 rounded-lg px-3 py-2 ${value === v ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-fg"}`}
-        >
-          {label}
-        </button>
-      ))}
+/** Selector segmentado (un grupo de botones conmutables). */
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: [T, string][];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <span className="block text-xs font-semibold text-muted">{label}</span>
+      <div role="group" aria-label={label} className="flex rounded-xl bg-surface-2 p-1 text-xs font-semibold">
+        {options.map(([v, text]) => (
+          <button
+            key={v}
+            onClick={() => onChange(v)}
+            aria-pressed={value === v}
+            className={`min-h-10 flex-1 rounded-lg px-3 py-2 ${value === v ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-fg"}`}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
     </div>
   );
+}
+
+function ReaderPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const s = useSettings();
 
   return (
-    <div className="absolute right-3 top-full mt-2 w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-border bg-surface p-4 shadow-2xl">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="font-bold">Lector</p>
-        <button onClick={onClose} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Cerrar">
-          <X className="size-4" />
-        </button>
-      </div>
+    <Modal open={open} onClose={onClose} title="Ajustes del lector">
       <div className="space-y-4 text-sm">
-        <label className="block space-y-1.5">
-          <span className="text-xs font-semibold text-muted">Modo de lectura</span>
-          <Seg value={s.readerMode} onChange={(v) => s.set({ readerMode: v })} options={[["webtoon", "Cascada"], ["paged", "Páginas"]]} />
-        </label>
+        <Segmented
+          label="Modo de lectura"
+          value={s.readerMode}
+          onChange={(v) => s.set({ readerMode: v })}
+          options={[["webtoon", "Cascada"], ["paged", "Páginas"]]}
+        />
         {s.readerMode === "paged" && (
-          <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-muted">Dirección</span>
-            <Seg
-              value={s.readerDirection}
-              onChange={(v) => s.set({ readerDirection: v })}
-              options={[["ltr", "Izq. → Der."], ["rtl", "Der. → Izq. (manga)"]]}
-            />
-          </label>
-        )}
-        <label className="block space-y-1.5">
-          <span className="text-xs font-semibold text-muted">Ajuste de imagen</span>
-          <Seg
-            value={s.readerFit}
-            onChange={(v) => s.set({ readerFit: v })}
-            options={[["width", "Ancho"], ["height", "Alto"], ["original", "Original"]]}
+          <Segmented
+            label="Dirección"
+            value={s.readerDirection}
+            onChange={(v) => s.set({ readerDirection: v })}
+            options={[["ltr", "Izq. → Der."], ["rtl", "Der. → Izq. (manga)"]]}
           />
-        </label>
+        )}
+        <Segmented
+          label="Ajuste de imagen"
+          value={s.readerFit}
+          onChange={(v) => s.set({ readerFit: v })}
+          options={[["width", "Ancho"], ["height", "Alto"], ["original", "Original"]]}
+        />
         {s.readerMode === "webtoon" && (
           <>
             <label className="block space-y-1.5">
@@ -584,16 +604,17 @@ function ReaderPanel({ onClose }: { onClose: () => void }) {
                 max={1700}
                 step={50}
                 value={s.webtoonMaxWidth || 1700}
+                aria-valuetext={s.webtoonMaxWidth ? `${s.webtoonMaxWidth} píxeles` : "Ancho completo"}
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   s.set({ webtoonMaxWidth: v >= 1700 ? 0 : v });
                 }}
-                className="w-full accent-[var(--accent)]"
+                className="h-8 w-full accent-[var(--accent)]"
               />
             </label>
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-muted">Separación entre páginas</span>
-              <Toggle checked={s.webtoonGap} onChange={(v) => s.set({ webtoonGap: v })} />
+              <Toggle checked={s.webtoonGap} onChange={(v) => s.set({ webtoonGap: v })} label="Separación entre páginas" />
             </div>
           </>
         )}
@@ -602,12 +623,12 @@ function ReaderPanel({ onClose }: { onClose: () => void }) {
             Precargar siguiente capítulo
             <span className="block font-normal">Al acercarte al final, para que se abra al instante.</span>
           </span>
-          <Toggle checked={s.preloadNext} onChange={(v) => s.set({ preloadNext: v })} />
+          <Toggle checked={s.preloadNext} onChange={(v) => s.set({ preloadNext: v })} label="Precargar siguiente capítulo" />
         </div>
-        <p className="border-t border-border pt-3 text-xs text-muted">
+        <p className="hidden border-t border-border pt-3 text-xs text-muted sm:block">
           Atajos: ← → pasar página · N / P capítulo · Esc salir
         </p>
       </div>
-    </div>
+    </Modal>
   );
 }

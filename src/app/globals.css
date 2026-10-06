@@ -92,6 +92,39 @@ body {
   animation: shimmer 1.4s infinite;
 }
 
+/* Ventanas emergentes (Modal) y avisos (Toaster) */
+@keyframes sheet-up {
+  from { transform: translateY(24px); opacity: 0; }
+}
+@keyframes pop-in {
+  from { transform: scale(0.97); opacity: 0; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+.modal-panel {
+  animation: sheet-up 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (min-width: 640px) {
+  .modal-panel {
+    animation-name: pop-in;
+    animation-duration: 0.16s;
+  }
+}
+dialog[open]::backdrop {
+  animation: fade-in 0.2s ease-out;
+}
+.toast-in {
+  animation: sheet-up 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-panel,
+  .toast-in,
+  dialog[open]::backdrop {
+    animation: none;
+  }
+}
+
 /* Contraseña incorrecta en /acceso */
 @keyframes shake {
   0%, 100% { transform: translateX(0); }

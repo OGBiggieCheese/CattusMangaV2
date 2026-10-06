@@ -16,9 +16,10 @@ import {
   Settings2,
   Tag,
   Trash2,
-  X,
 } from "lucide-react";
-import { api, coverUrl, type Category, type HistoryEntry, type LibraryManga } from "@/lib/api";
+import { api, coverUrl, type Category, type LibraryManga } from "@/lib/api";
+import { Modal } from "@/components/Modal";
+import { confirmAction } from "@/components/Confirm";
 import { Button, Cover, EmptyState, ErrorBox, GRID, MangaCard, MangaGridSkeleton, PageHeader, SearchInput } from "@/components/ui";
 import { NO_LIBRARY_FILTERS, useSettings, type LibrarySort } from "@/lib/settings";
 
@@ -121,6 +122,7 @@ export default function LibraryPage() {
             onClick={() => setManaging(true)}
             className="ml-1 grid size-9 shrink-0 place-items-center rounded-full border border-dashed border-border text-muted transition hover:border-accent hover:text-accent"
             title="Gestionar categorías"
+            aria-label="Gestionar categorías"
           >
             <Settings2 className="size-4" />
           </button>
@@ -283,6 +285,9 @@ function CategoryButton({ manga, categories }: { manga: LibraryManga; categories
         manga.id,
         memberOf.has(categoryId) ? { removeFromCategories: [categoryId] } : { addToCategories: [categoryId] },
       ),
+    meta: { errorMessage: "No se pudo cambiar la categoría" },
+    // Si falla, se recarga la biblioteca para deshacer el cambio optimista.
+    onError: () => qc.invalidateQueries({ queryKey: ["library"] }),
     onMutate: (categoryId) => {
       qc.setQueryData<LibraryManga[]>(["library"], (old) =>
         old?.map((m) =>
@@ -309,48 +314,32 @@ function CategoryButton({ manga, categories }: { manga: LibraryManga; categories
           e.stopPropagation();
           setOpen(true);
         }}
-        className={`grid size-8 place-items-center rounded-full backdrop-blur transition ${
+        // 36 px visibles; el área táctil se amplía con el pseudo-elemento para llegar a ~44 px.
+        className={`relative grid size-9 place-items-center rounded-full backdrop-blur transition after:absolute after:-inset-1 ${
           memberOf.size > 0 ? "bg-accent text-accent-fg" : "bg-black/50 text-white hover:bg-black/70"
         }`}
+        aria-label={`Categorías de ${manga.title}`}
+        aria-haspopup="dialog"
         title="Categorías"
       >
-        <Tag className="size-3.5" />
+        <Tag className="size-4" />
       </button>
-      {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setOpen(false);
-          }}
-        >
-          <div
-            className="w-full max-w-xs rounded-2xl border border-border bg-surface p-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <p className="line-clamp-1 font-bold">{manga.title}</p>
-              <button onClick={() => setOpen(false)} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Cerrar">
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="space-y-1">
-              {categories.map((c) => (
-                <label key={c.id} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 text-sm hover:bg-surface-2">
-                  <input
-                    type="checkbox"
-                    checked={memberOf.has(c.id)}
-                    onChange={() => toggle.mutate(c.id)}
-                    className="size-4 accent-[var(--accent)]"
-                  />
-                  {c.name}
-                </label>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal open={open} onClose={() => setOpen(false)} title="Categorías" description={manga.title}>
+        <fieldset className="space-y-1">
+          <legend className="sr-only">Categorías de {manga.title}</legend>
+          {categories.map((c) => (
+            <label key={c.id} className="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 text-sm hover:bg-surface-2">
+              <input
+                type="checkbox"
+                checked={memberOf.has(c.id)}
+                onChange={() => toggle.mutate(c.id)}
+                className="size-5 accent-[var(--accent)]"
+              />
+              {c.name}
+            </label>
+          ))}
+        </fieldset>
+      </Modal>
     </>
   );
 }
@@ -362,6 +351,7 @@ function ManageCategoriesModal({ categories, onClose }: { categories: Category[]
 
   const create = useMutation({
     mutationFn: (n: string) => api.createCategory(n),
+    meta: { errorMessage: "No se pudo crear la categoría" },
     onSuccess: () => {
       setName("");
       invalidate();
@@ -369,73 +359,72 @@ function ManageCategoriesModal({ categories, onClose }: { categories: Category[]
   });
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteCategory(id),
+    meta: { errorMessage: "No se pudo eliminar la categoría" },
     onSuccess: () => {
       invalidate();
       qc.invalidateQueries({ queryKey: ["library"] });
     },
   });
 
+  const confirmRemove = async (c: Category) => {
+    const ok = await confirmAction({
+      title: `¿Eliminar la categoría «${c.name}»?`,
+      message: "Los mangas no se borran de la biblioteca: solo dejan de estar en esta categoría.",
+      confirmLabel: "Eliminar",
+      danger: true,
+    });
+    if (ok) remove.mutate(c.id);
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between">
-          <p className="font-bold">Categorías</p>
-          <button onClick={onClose} className="rounded-lg p-1 text-muted hover:bg-surface-2" aria-label="Cerrar">
-            <X className="size-4" />
-          </button>
-        </div>
+    <Modal open onClose={onClose} title="Categorías">
+      <ul className="mb-4 space-y-1">
+        {categories.length === 0 && <li className="py-2 text-sm text-muted">Aún no tienes categorías.</li>}
+        {categories.map((c) => (
+          <li key={c.id} className="flex min-h-12 items-center justify-between gap-2 rounded-xl pl-3 hover:bg-surface-2">
+            <span className="truncate text-sm">{c.name}</span>
+            <button
+              onClick={() => confirmRemove(c)}
+              disabled={remove.isPending}
+              className="grid size-11 shrink-0 place-items-center rounded-xl text-muted hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+              aria-label={`Eliminar la categoría ${c.name}`}
+              title="Eliminar categoría"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </li>
+        ))}
+      </ul>
 
-        <ul className="mb-4 max-h-64 space-y-1 overflow-y-auto">
-          {categories.length === 0 && <li className="py-2 text-sm text-muted">Aún no tienes categorías.</li>}
-          {categories.map((c) => (
-            <li key={c.id} className="flex items-center justify-between gap-2 rounded-lg px-2 py-2 hover:bg-surface-2">
-              <span className="truncate text-sm">{c.name}</span>
-              <button
-                onClick={() => remove.mutate(c.id)}
-                disabled={remove.isPending}
-                className="grid size-7 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
-                title="Eliminar categoría"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (name.trim()) create.mutate(name.trim());
-          }}
-        >
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Nueva categoría…"
-            className="h-10 flex-1 rounded-xl border border-border bg-surface-2 px-3 text-sm outline-none focus:border-accent"
-          />
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name.trim()}>
-            {!create.isPending && <FolderPlus className="size-4" />}
-          </Button>
-        </form>
-      </div>
-    </div>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) create.mutate(name.trim());
+        }}
+      >
+        <label htmlFor="new-category" className="sr-only">
+          Nombre de la nueva categoría
+        </label>
+        <input
+          id="new-category"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Nueva categoría…"
+          maxLength={60}
+          className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-surface-2 px-3 text-base outline-none focus:border-accent sm:text-sm"
+        />
+        <Button type="submit" variant="primary" className="h-11 w-11 px-0" loading={create.isPending} disabled={!name.trim()} aria-label="Crear categoría">
+          {!create.isPending && <FolderPlus className="size-4" />}
+        </Button>
+      </form>
+    </Modal>
   );
 }
 
 function ContinueReading() {
-  const history = useQuery({ queryKey: ["history"], queryFn: () => api.history(40) });
-  const items = useMemo(() => {
-    const seen = new Set<number>();
-    const out: HistoryEntry[] = [];
-    for (const h of history.data ?? []) {
-      if (api.isHiddenFromHistory(h) || seen.has(h.manga.id)) continue;
-      seen.add(h.manga.id);
-      out.push(h);
-    }
-    return out.slice(0, 12);
-  }, [history.data]);
+  const history = useQuery({ queryKey: ["history", 12], queryFn: () => api.history(12) });
+  const items = (history.data ?? []).map((g) => g.entry);
 
   if (!items.length) return null;
 

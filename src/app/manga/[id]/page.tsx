@@ -25,6 +25,8 @@ import { useDownloads, useInvalidateDownloads } from "@/lib/downloads";
 import { previousPath } from "@/lib/nav";
 import { formatDate, STATUS_LABEL } from "@/lib/format";
 import { Button, Cover, ErrorBox, SearchInput, Spinner } from "@/components/ui";
+import { Modal } from "@/components/Modal";
+import { confirmAction } from "@/components/Confirm";
 
 const STALE_MS = 30 * 60_000;
 const CHAPTER_PAGE = 100;
@@ -39,6 +41,7 @@ export default function MangaPage() {
 
   const refresh = useMutation({
     mutationFn: () => api.refreshManga(id),
+    meta: { errorMessage: "No se pudo actualizar desde la fuente" },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["manga", id] });
       qc.invalidateQueries({ queryKey: ["chapters", id] });
@@ -60,6 +63,7 @@ export default function MangaPage() {
 
   const toggleLibrary = useMutation({
     mutationFn: (v: boolean) => api.setInLibrary(id, v),
+    meta: { errorMessage: "No se pudo cambiar la biblioteca" },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["manga", id] });
       qc.invalidateQueries({ queryKey: ["library"] });
@@ -220,6 +224,7 @@ function ChapterList({ mangaId, chapters, updating }: { mangaId: number; chapter
 
   const mark = useMutation({
     mutationFn: ({ ids, isRead }: { ids: number[]; isRead: boolean }) => api.updateChapters(ids, { isRead }),
+    meta: { errorMessage: "No se pudo marcar el capítulo" },
     onMutate: ({ ids, isRead }) => {
       qc.setQueryData<Chapter[]>(["chapters", mangaId], (old) =>
         old?.map((c) => (ids.includes(c.id) ? { ...c, isRead } : c)),
@@ -246,7 +251,20 @@ function ChapterList({ mangaId, chapters, updating }: { mangaId: number; chapter
     [downloads.data],
   );
   const invalidateDownloads = useInvalidateDownloads();
-  const dl = useMutation({ mutationFn: (fn: () => Promise<unknown>) => fn(), onSettled: invalidateDownloads });
+  const dl = useMutation({
+    mutationFn: (fn: () => Promise<unknown>) => fn(),
+    meta: { errorMessage: "Error en la descarga" },
+    onSettled: invalidateDownloads,
+  });
+
+  const markAllRead = async () => {
+    const ok = await confirmAction({
+      title: `¿Marcar los ${unread.length} capítulos sin leer como leídos?`,
+      message: "Se perderá el progreso de los capítulos que tengas a medias.",
+      confirmLabel: "Marcar como leídos",
+    });
+    if (ok) mark.mutate({ ids: unread.map((c) => c.id), isRead: true });
+  };
 
   return (
     <section>
@@ -272,12 +290,12 @@ function ChapterList({ mangaId, chapters, updating }: { mangaId: number; chapter
               No leídos
             </button>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => setAsc((v) => !v)} title="Invertir orden">
+          <Button size="sm" variant="ghost" onClick={() => setAsc((v) => !v)} title="Invertir orden" aria-label="Invertir orden">
             <ArrowDownUp className="size-4" />
           </Button>
           <DownloadMenu chapters={chapters} queued={queued} onAction={(fn) => dl.mutate(fn)} />
           {unread.length > 0 && (
-            <Button size="sm" variant="ghost" onClick={() => mark.mutate({ ids: unread.map((c) => c.id), isRead: true })} title="Marcar todo como leído">
+            <Button size="sm" variant="ghost" onClick={markAllRead} title="Marcar todo como leído" aria-label="Marcar todo como leído">
               <CheckCheck className="size-4" />
             </Button>
           )}
@@ -307,8 +325,10 @@ function ChapterList({ mangaId, chapters, updating }: { mangaId: number; chapter
                 <DownloadButton chapter={c} item={queued.get(c.id)} onAction={(fn) => dl.mutate(fn)} />
                 <button
                   onClick={() => mark.mutate({ ids: [c.id], isRead: !c.isRead })}
-                  className={`grid size-9 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2 ${c.isRead ? "text-success" : "text-muted"}`}
+                  className={`grid size-10 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2 ${c.isRead ? "text-success" : "text-muted"}`}
                   title={c.isRead ? "Marcar como no leído" : "Marcar como leído"}
+                  aria-label={`${c.isRead ? "Marcar como no leído" : "Marcar como leído"}: ${c.name}`}
+                  aria-pressed={c.isRead}
                 >
                   {c.isRead ? <Check className="size-4" strokeWidth={3} /> : <Circle className="size-4" />}
                 </button>
@@ -317,7 +337,6 @@ function ChapterList({ mangaId, chapters, updating }: { mangaId: number; chapter
           })}
         </ul>
       )}
-      {dl.isError && <p className="mt-3 text-sm text-danger">{(dl.error as Error).message}</p>}
       {visible.length > limit && (
         <div className="mt-4 text-center">
           <Button onClick={() => setLimit((l) => l + CHAPTER_PAGE)}>Mostrar más ({visible.length - limit})</Button>
@@ -331,36 +350,41 @@ type DownloadAction = (fn: () => Promise<unknown>) => void;
 
 /** Botón de descarga de un capítulo: descarga, muestra el progreso, cancela o borra. */
 function DownloadButton({ chapter: c, item, onAction }: { chapter: Chapter; item?: DownloadItem; onAction: DownloadAction }) {
-  const base = "grid size-9 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2";
+  const base = "grid size-10 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2";
   if (item?.state === "ERROR")
     return (
       <button
         onClick={() => onAction(() => api.dequeue([c.id]).then(() => api.download([c.id])))}
         className={`${base} text-danger`}
         title="La descarga falló. Clic para reintentar"
+        aria-label={`Reintentar descarga: ${c.name}`}
       >
         <CircleAlert className="size-4" />
       </button>
     );
   if (item)
     return (
-      <button onClick={() => onAction(() => api.dequeue([c.id]))} className={`${base} text-accent`} title="Clic para cancelar la descarga">
+      <button onClick={() => onAction(() => api.dequeue([c.id]))} className={`${base} text-accent`} title="Clic para cancelar la descarga" aria-label={`Cancelar descarga: ${c.name}`}>
         {item.state === "DOWNLOADING" ? <ProgressRing value={item.progress} /> : <Loader2 className="size-4 animate-spin opacity-60" />}
       </button>
     );
   if (c.isDownloaded)
     return (
       <button
-        onClick={() => onAction(() => api.deleteDownloads([c.id]))}
+        onClick={async () => {
+          const ok = await confirmAction({ title: "¿Borrar la descarga?", message: c.name, confirmLabel: "Borrar", danger: true });
+          if (ok) onAction(() => api.deleteDownloads([c.id]));
+        }}
         className={`${base} group/dl text-success hover:text-danger`}
         title="Descargado. Clic para borrar la descarga"
+        aria-label={`Borrar descarga: ${c.name}`}
       >
         <HardDrive className="size-4 group-hover/dl:hidden" />
         <Trash2 className="hidden size-4 group-hover/dl:block" />
       </button>
     );
   return (
-    <button onClick={() => onAction(() => api.download([c.id]))} className={`${base} text-muted hover:text-fg`} title="Descargar">
+    <button onClick={() => onAction(() => api.download([c.id]))} className={`${base} text-muted hover:text-fg`} title="Descargar" aria-label={`Descargar ${c.name}`}>
       <Download className="size-4" />
     </button>
   );
@@ -416,47 +440,45 @@ function DownloadMenu({
     onAction(fn);
   };
 
+  const deleteAll = async () => {
+    setOpen(false);
+    const ok = await confirmAction({
+      title: `¿Borrar los ${downloaded.length} capítulos descargados?`,
+      message: "Se borran del servidor. Podrás volver a descargarlos cuando quieras.",
+      confirmLabel: "Borrar",
+      danger: true,
+    });
+    if (ok) onAction(() => api.deleteDownloads(downloaded.map((c) => c.id)));
+  };
+
+  const item = "flex min-h-12 w-full items-center justify-between rounded-xl px-3 text-left text-sm hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40";
+
   return (
-    <div className="relative">
-      <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)} title="Descargar capítulos">
+    <>
+      <Button size="sm" variant="ghost" onClick={() => setOpen(true)} title="Descargar capítulos" aria-label="Descargar capítulos" aria-haspopup="dialog">
         <Download className="size-4" />
       </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full z-50 mt-1 w-60 rounded-xl border border-border bg-surface p-1.5 text-sm shadow-2xl">
-            <p className="px-3 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Descargar</p>
-            {options.map((o) => (
-              <button
-                key={o.label}
-                disabled={!o.ids.length}
-                onClick={() => run(() => api.download(o.ids))}
-                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
-              >
-                {o.label}
-                <span className="text-xs text-muted">{o.ids.length}</span>
+      <Modal open={open} onClose={() => setOpen(false)} title="Descargar capítulos">
+        <div className="space-y-0.5">
+          {options.map((o) => (
+            <button key={o.label} disabled={!o.ids.length} onClick={() => run(() => api.download(o.ids))} className={item}>
+              {o.label}
+              <span className="text-xs text-muted">{o.ids.length}</span>
+            </button>
+          ))}
+          {downloaded.length > 0 && (
+            <>
+              <hr className="!my-2 border-border" />
+              <button onClick={deleteAll} className={`${item} text-danger hover:!bg-danger/10`}>
+                <span className="flex items-center gap-2">
+                  <Trash2 className="size-4" /> Borrar descargas
+                </span>
+                <span className="text-xs">{downloaded.length}</span>
               </button>
-            ))}
-            {downloaded.length > 0 && (
-              <>
-                <hr className="my-1.5 border-border" />
-                <button
-                  onClick={() => {
-                    if (confirm(`¿Borrar los ${downloaded.length} capítulos descargados?`))
-                      run(() => api.deleteDownloads(downloaded.map((c) => c.id)));
-                  }}
-                  className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-danger hover:bg-danger/10"
-                >
-                  <span className="flex items-center gap-2">
-                    <Trash2 className="size-3.5" /> Borrar descargas
-                  </span>
-                  <span className="text-xs">{downloaded.length}</span>
-                </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+            </>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }

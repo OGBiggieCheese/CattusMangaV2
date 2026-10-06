@@ -1,10 +1,15 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, CheckCircle2, DatabaseBackup, Download, Palette, Server, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { useSettings, type ReaderFit, type ReaderMode, type Theme } from "@/lib/settings";
+import { toast } from "@/lib/toast";
 import { Button, PageHeader, Toggle } from "@/components/ui";
+import { confirmAction } from "@/components/Confirm";
+
+/** Una biblioteca grande puede tardar, pero si en media hora no ha terminado algo va mal. */
+const RESTORE_TIMEOUT_MS = 30 * 60_000;
 
 export default function SettingsPage() {
   const s = useSettings();
@@ -16,19 +21,21 @@ export default function SettingsPage() {
         <Card icon={Palette} title="Apariencia">
           <Row label="Tema">
             <Select<Theme>
+              label="Tema"
               value={s.theme}
               onChange={(v) => s.set({ theme: v })}
               options={[["dark", "Oscuro"], ["light", "Claro"], ["system", "Según el sistema"]]}
             />
           </Row>
           <Row label="Mostrar contenido +18" hint="Muestra extensiones marcadas como adultas.">
-            <Toggle checked={s.showNsfw} onChange={(v) => s.set({ showNsfw: v })} />
+            <Toggle checked={s.showNsfw} onChange={(v) => s.set({ showNsfw: v })} label="Mostrar contenido +18" />
           </Row>
         </Card>
 
         <Card icon={BookOpen} title="Lector">
           <Row label="Modo de lectura por defecto">
             <Select<ReaderMode>
+              label="Modo de lectura por defecto"
               value={s.readerMode}
               onChange={(v) => s.set({ readerMode: v })}
               options={[["webtoon", "Cascada continua (webtoon)"], ["paged", "Página a página"]]}
@@ -36,6 +43,7 @@ export default function SettingsPage() {
           </Row>
           <Row label="Dirección (modo páginas)">
             <Select
+              label="Dirección (modo páginas)"
               value={s.readerDirection}
               onChange={(v) => s.set({ readerDirection: v })}
               options={[["ltr", "Izquierda a derecha"], ["rtl", "Derecha a izquierda (manga)"]]}
@@ -43,6 +51,7 @@ export default function SettingsPage() {
           </Row>
           <Row label="Ajuste de imagen">
             <Select<ReaderFit>
+              label="Ajuste de imagen"
               value={s.readerFit}
               onChange={(v) => s.set({ readerFit: v })}
               options={[["width", "Ajustar al ancho"], ["height", "Ajustar al alto"], ["original", "Tamaño original"]]}
@@ -83,9 +92,20 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   );
 }
 
-function Select<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: [T, string][] }) {
+function Select<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: [T, string][];
+}) {
   return (
     <select
+      aria-label={label}
       value={value}
       onChange={(e) => onChange(e.target.value as T)}
       className="h-10 rounded-xl border border-border bg-surface-2 px-3 text-sm outline-none focus:border-accent"
@@ -122,24 +142,48 @@ function BackupCard() {
     }
   };
 
+  // La restauración sigue en el servidor aunque salgas de Ajustes: el estado en pantalla solo se
+  // actualiza si la página sigue abierta, y el resultado final llega siempre como aviso.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const show = (s: typeof status) => mounted.current && setStatus(s);
+
   const restore = async (file: File) => {
-    setStatus({ kind: "info", text: "Subiendo copia…" });
+    const ok = await confirmAction({
+      title: "¿Importar esta copia de seguridad?",
+      message: `«${file.name}». Sus mangas, categorías y progreso se combinarán con tu biblioteca actual. Puede tardar varios minutos.`,
+      confirmLabel: "Importar",
+    });
+    if (!ok) return;
+
+    show({ kind: "info", text: "Subiendo copia…" });
     try {
       const id = await api.restoreBackup(file);
+      const deadline = Date.now() + RESTORE_TIMEOUT_MS;
       for (;;) {
         await new Promise((r) => setTimeout(r, 1000));
+        if (Date.now() > deadline)
+          throw new Error("La restauración está tardando demasiado. Revisa los registros de Suwayomi (docker compose logs suwayomi).");
         const st = await api.restoreStatus(id);
         if (!st) continue;
         if (st.state === "SUCCESS") {
-          setStatus({ kind: "ok", text: `Restauración completada (${st.totalManga} mangas).` });
+          const text = `Restauración completada (${st.totalManga} mangas).`;
+          show({ kind: "ok", text });
+          toast.success(text);
           qc.invalidateQueries();
           return;
         }
         if (st.state === "FAILURE") throw new Error("La restauración falló. ¿Es un archivo .tachibk válido?");
-        setStatus({ kind: "info", text: `Restaurando… ${st.mangaProgress}/${st.totalManga}` });
+        show({ kind: "info", text: `Restaurando… ${st.mangaProgress}/${st.totalManga}` });
       }
     } catch (e) {
-      setStatus({ kind: "error", text: (e as Error).message });
+      show({ kind: "error", text: (e as Error).message });
+      toast.error((e as Error).message, { key: "restore" });
     }
   };
 
@@ -170,7 +214,7 @@ function BackupCard() {
           />
         </div>
         {status && (
-          <p className={`text-sm ${status.kind === "error" ? "text-danger" : status.kind === "ok" ? "text-success" : "text-muted"}`}>
+          <p role={status.kind === "error" ? "alert" : "status"} className={`text-sm ${status.kind === "error" ? "text-danger" : status.kind === "ok" ? "text-success" : "text-muted"}`}>
             {status.text}
           </p>
         )}

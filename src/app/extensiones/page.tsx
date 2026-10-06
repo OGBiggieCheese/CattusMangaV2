@@ -6,6 +6,7 @@ import { api, swUrl, type Extension } from "@/lib/api";
 import { langName } from "@/lib/format";
 import { useSettings } from "@/lib/settings";
 import { Button, EmptyState, ErrorBox, PageHeader, SearchInput, Spinner, Toggle } from "@/components/ui";
+import { confirmAction } from "@/components/Confirm";
 
 const PAGE = 60;
 
@@ -22,6 +23,7 @@ export default function ExtensionsPage() {
   const action = useMutation({
     mutationFn: ({ ext, op }: { ext: Extension; op: "install" | "uninstall" | "update" }) =>
       api.updateExtension(ext.pkgName, { [op]: true }),
+    meta: { errorMessage: "No se pudo completar la operación con la extensión" },
     onSettled: async () => {
       qc.setQueryData(["extensions"], await api.extensions());
       qc.invalidateQueries({ queryKey: ["sources"] });
@@ -68,6 +70,16 @@ export default function ExtensionsPage() {
     set({ sourceOrder: names });
   };
 
+  const uninstall = async (ext: Extension) => {
+    const ok = await confirmAction({
+      title: `¿Quitar la extensión «${ext.name}»?`,
+      message: "Los mangas de esta fuente seguirán en tu biblioteca, pero no podrás buscar capítulos nuevos ni leer los no descargados hasta que la vuelvas a instalar.",
+      confirmLabel: "Quitar",
+      danger: true,
+    });
+    if (ok) action.mutate({ ext, op: "uninstall" });
+  };
+
   const busy = (pkg: string) => action.isPending && action.variables?.ext.pkgName === pkg;
 
   return (
@@ -108,12 +120,6 @@ export default function ExtensionsPage() {
           Mostrar +18
         </label>
       </div>
-
-      {action.isError && (
-        <div className="mb-4">
-          <ErrorBox error={action.error} />
-        </div>
-      )}
 
       {exts.isPending ? (
         <Spinner label="Leyendo repositorios…" />
@@ -156,7 +162,7 @@ export default function ExtensionsPage() {
                     dragIndex.current = null;
                   }}
                 >
-                  <Button size="sm" variant="danger" onClick={() => action.mutate({ ext: e, op: "uninstall" })} loading={busy(e.pkgName)}>
+                  <Button size="sm" variant="danger" onClick={() => uninstall(e)} loading={busy(e.pkgName)}>
                     {!busy(e.pkgName) && <Trash2 className="size-3.5" />} Quitar
                   </Button>
                 </ExtensionRow>
@@ -247,12 +253,27 @@ function StoresPanel({ onClose }: { onClose: () => void }) {
   };
   const add = useMutation({
     mutationFn: (u: string) => api.addStore(u),
+    // El error se muestra junto al formulario.
+    meta: { silent: true },
     onSuccess: () => {
       setUrl("");
       refresh();
     },
   });
-  const remove = useMutation({ mutationFn: (u: string) => api.removeStore(u), onSuccess: refresh });
+  const remove = useMutation({
+    mutationFn: (u: string) => api.removeStore(u),
+    meta: { errorMessage: "No se pudo quitar el repositorio" },
+    onSuccess: refresh,
+  });
+  const confirmRemove = async (store: { name: string; indexUrl: string }) => {
+    const ok = await confirmAction({
+      title: `¿Quitar el repositorio «${store.name}»?`,
+      message: "Dejarás de ver sus extensiones disponibles y sus actualizaciones. Las ya instaladas no se borran.",
+      confirmLabel: "Quitar",
+      danger: true,
+    });
+    if (ok) remove.mutate(store.indexUrl);
+  };
 
   return (
     <div className="mb-6 rounded-2xl border border-accent/40 bg-surface p-4 sm:p-5">
@@ -285,7 +306,7 @@ function StoresPanel({ onClose }: { onClose: () => void }) {
                 </p>
                 <p className="truncate text-xs text-muted">{s.indexUrl}</p>
               </div>
-              <Button size="sm" variant="ghost" onClick={() => remove.mutate(s.indexUrl)} loading={remove.isPending && remove.variables === s.indexUrl}>
+              <Button size="sm" variant="ghost" aria-label={`Quitar el repositorio ${s.name}`} onClick={() => confirmRemove(s)} loading={remove.isPending && remove.variables === s.indexUrl}>
                 <Trash2 className="size-3.5" />
               </Button>
             </li>
@@ -300,17 +321,23 @@ function StoresPanel({ onClose }: { onClose: () => void }) {
           if (url.trim()) add.mutate(url.trim());
         }}
       >
+        <label htmlFor="store-url" className="sr-only">
+          URL del índice del repositorio
+        </label>
         <input
+          id="store-url"
+          type="url"
+          inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb"
-          className="h-10 flex-1 rounded-xl border border-border bg-bg px-3 text-sm outline-none placeholder:text-muted focus:border-accent"
+          className="h-11 flex-1 rounded-xl border border-border bg-bg px-3 text-base outline-none sm:h-10 sm:text-sm placeholder:text-muted focus:border-accent"
         />
         <Button variant="primary" type="submit" loading={add.isPending} disabled={!url.trim()}>
           <Plus className="size-4" /> Añadir
         </Button>
       </form>
-      {add.isError && <p className="mt-2 text-sm text-danger">{(add.error as Error).message}</p>}
+      {add.isError && <p role="alert" className="mt-2 text-sm text-danger">{(add.error as Error).message}</p>}
     </div>
   );
 }

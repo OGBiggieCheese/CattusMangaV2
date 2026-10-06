@@ -2,10 +2,11 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, ChevronDown, Download, HardDrive, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
+import { BookOpen, ChevronDown, Download, HardDrive, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
 import { api, coverUrl, type DownloadedChapter, type DownloadItem, type MangaCardData } from "@/lib/api";
 import { useDownloads, useInvalidateDownloads } from "@/lib/downloads";
 import { Button, Cover, EmptyState, ErrorBox, PageHeader, Spinner } from "@/components/ui";
+import { confirmAction } from "@/components/Confirm";
 
 export default function DownloadsPage() {
   const status = useDownloads();
@@ -49,7 +50,21 @@ const STATE_LABEL: Record<DownloadItem["state"], string> = {
 
 function Queue({ items, running }: { items: DownloadItem[]; running: boolean }) {
   const invalidate = useInvalidateDownloads();
-  const action = useMutation({ mutationFn: (fn: () => Promise<unknown>) => fn(), onSettled: invalidate });
+  const action = useMutation({
+    mutationFn: (fn: () => Promise<unknown>) => fn(),
+    meta: { errorMessage: "Error en la cola de descargas" },
+    onSettled: invalidate,
+  });
+
+  const clearQueue = async () => {
+    const ok = await confirmAction({
+      title: `¿Vaciar la cola de descargas?`,
+      message: `Se cancelarán ${items.length} ${items.length === 1 ? "descarga pendiente" : "descargas pendientes"}. Lo ya descargado no se borra.`,
+      confirmLabel: "Vaciar cola",
+      danger: true,
+    });
+    if (ok) action.mutate(api.clearDownloads);
+  };
   const errors = items.filter((i) => i.state === "ERROR");
 
   return (
@@ -75,7 +90,7 @@ function Queue({ items, running }: { items: DownloadItem[]; running: boolean }) 
             {running ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
             {running ? "Pausar" : "Reanudar"}
           </Button>
-          <Button size="sm" variant="danger" onClick={() => action.mutate(api.clearDownloads)}>
+          <Button size="sm" variant="danger" onClick={clearQueue}>
             <X className="size-3.5" /> Vaciar cola
           </Button>
         </div>
@@ -105,16 +120,18 @@ function Queue({ items, running }: { items: DownloadItem[]; running: boolean }) 
             {i.state === "ERROR" && (
               <button
                 onClick={() => action.mutate(() => api.dequeue([i.chapter.id]).then(() => api.download([i.chapter.id])))}
-                className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+                className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
                 title="Reintentar"
+                aria-label={`Reintentar: ${i.chapter.name}`}
               >
                 <RotateCw className="size-4" />
               </button>
             )}
             <button
               onClick={() => action.mutate(() => api.dequeue([i.chapter.id]))}
-              className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
+              className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
               title="Quitar de la cola"
+              aria-label={`Quitar de la cola: ${i.chapter.name}`}
             >
               <X className="size-4" />
             </button>
@@ -157,7 +174,21 @@ function Downloaded({ chapters }: { chapters: DownloadedChapter[] }) {
 function MangaDownloads({ manga, chapters }: { manga: MangaCardData; chapters: DownloadedChapter[] }) {
   const [open, setOpen] = useState(false);
   const invalidate = useInvalidateDownloads();
-  const remove = useMutation({ mutationFn: api.deleteDownloads, onSettled: invalidate });
+  const remove = useMutation({
+    mutationFn: api.deleteDownloads,
+    meta: { errorMessage: "No se pudo borrar la descarga" },
+    onSettled: invalidate,
+  });
+
+  const removeAll = async () => {
+    const ok = await confirmAction({
+      title: `¿Borrar los ${chapters.length} capítulos descargados?`,
+      message: `De «${manga.title}». Podrás volver a descargarlos cuando quieras.`,
+      confirmLabel: "Borrar",
+      danger: true,
+    });
+    if (ok) remove.mutate(chapters.map((c) => c.id));
+  };
 
   return (
     <div className="rounded-2xl border border-border bg-surface">
@@ -165,7 +196,7 @@ function MangaDownloads({ manga, chapters }: { manga: MangaCardData; chapters: D
         <Link href={`/manga/${manga.id}`} className="shrink-0">
           <Cover src={coverUrl(manga)} alt={manga.title} className="h-16 w-11 rounded-lg" />
         </Link>
-        <button onClick={() => setOpen((v) => !v)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-2 text-left">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{manga.title}</p>
             <p className="flex items-center gap-1 text-xs text-muted">
@@ -175,13 +206,11 @@ function MangaDownloads({ manga, chapters }: { manga: MangaCardData; chapters: D
           <ChevronDown className={`size-4 shrink-0 text-muted transition ${open ? "rotate-180" : ""}`} />
         </button>
         <button
-          onClick={() => {
-            if (confirm(`¿Borrar los ${chapters.length} capítulos descargados de «${manga.title}»?`))
-              remove.mutate(chapters.map((c) => c.id));
-          }}
+          onClick={removeAll}
           disabled={remove.isPending}
-          className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
+          className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
           title="Borrar todas las descargas de este manga"
+          aria-label={`Borrar todas las descargas de ${manga.title}`}
         >
           <Trash2 className="size-4" />
         </button>
@@ -197,19 +226,15 @@ function MangaDownloads({ manga, chapters }: { manga: MangaCardData; chapters: D
               <button
                 onClick={() => remove.mutate([c.id])}
                 disabled={remove.isPending}
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
+                className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:bg-danger/15 hover:text-danger"
                 title="Borrar descarga"
+                aria-label={`Borrar descarga: ${c.name}`}
               >
                 <Trash2 className="size-3.5" />
               </button>
             </li>
           ))}
         </ul>
-      )}
-      {remove.isError && (
-        <p className="flex items-center gap-2 border-t border-border px-4 py-2 text-xs text-danger">
-          <AlertTriangle className="size-3.5" /> {(remove.error as Error).message}
-        </p>
       )}
     </div>
   );
