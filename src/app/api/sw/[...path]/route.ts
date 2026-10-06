@@ -2,6 +2,7 @@
 // dirección real del servidor (y sus credenciales, si las tiene) nunca salen del servidor.
 import type { NextRequest } from "next/server";
 import { AUTH_COOKIE, isAuthorized } from "@/lib/auth";
+import { checkProxyRequest } from "@/lib/proxy-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,16 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   // El proxy de Next ya lo exige; se repite aquí porque esta ruta da acceso completo a Suwayomi.
   if (!(await isAuthorized(req.cookies.get(AUTH_COOKIE)?.value))) return new Response("No autorizado", { status: 401 });
   const { path } = await ctx.params;
+  const decision = checkProxyRequest({
+    method: req.method,
+    path: "/" + path.join("/"),
+    secFetchSite: req.headers.get("sec-fetch-site"),
+    origin: req.headers.get("origin"),
+    host: req.headers.get("host"),
+    forwardedHost: req.headers.get("x-forwarded-host"),
+  });
+  if (!decision.ok) return Response.json({ errors: [{ message: decision.reason }] }, { status: decision.status });
+
   const target = `${BASE}/${path.map(encodeURIComponent).join("/")}${req.nextUrl.search}`;
 
   const headers = new Headers();
@@ -63,4 +74,5 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
-export { handler as GET, handler as POST, handler as PUT, handler as PATCH, handler as DELETE };
+// PUT/PATCH/DELETE se exportan para que la política los rechace con un mensaje claro (405).
+export { handler as GET, handler as HEAD, handler as POST, handler as PUT, handler as PATCH, handler as DELETE };
